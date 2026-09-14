@@ -3,6 +3,7 @@ const express = require('express');
 const session = require('express-session');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 
 const { pool, initSchema } = require('./src/db');
 const { runAgent } = require('./src/agent');
@@ -12,6 +13,24 @@ const projects = require('./src/skills/projects');
 const journal = require('./src/skills/journal');
 
 const app = express();
+
+// Hostinger's CDN caches static files at the edge, so a deploy alone does not
+// reach browsers. Stamping asset URLs with a per-boot id makes each deploy a
+// distinct object the CDN has never seen.
+const BUILD_ID = Date.now().toString(36);
+
+function page(name) {
+  return fs
+    .readFileSync(path.join(__dirname, 'public', name), 'utf8')
+    .replace(/(src|href)="\/([\w.-]+\.(?:js|css))"/g, `$1="/$2?v=${BUILD_ID}"`);
+}
+
+const INDEX_HTML = page('index.html');
+const LOGIN_HTML = page('login.html');
+
+function sendPage(res, html) {
+  res.set('Cache-Control', 'no-store').type('html').send(html);
+}
 app.use(cors({ origin: true, credentials: true }));
 // Voice clips arrive as base64 in the JSON body, so the default 100kb cap is
 // far too small.
@@ -30,7 +49,7 @@ app.use(
 );
 
 // --- Auth: everything below requires a password, everything above (login page/route) doesn't ---
-app.get('/login.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
+app.get('/login.html', (req, res) => sendPage(res, LOGIN_HTML));
 
 app.post('/api/login', (req, res) => {
   const { password } = req.body || {};
@@ -55,6 +74,8 @@ function requireAuth(req, res, next) {
 }
 
 app.use(requireAuth);
+app.get('/', (req, res) => sendPage(res, INDEX_HTML));
+
 // Code must revalidate on every load, or a deploy leaves browsers running the
 // previous build. The wake-word model is large and immutable, so it may cache.
 app.use(

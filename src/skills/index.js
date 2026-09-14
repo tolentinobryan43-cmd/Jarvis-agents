@@ -3,7 +3,7 @@ const projects = require('./projects');
 const journal = require('./journal');
 const briefing = require('./briefing');
 
-// Each skill = a tool Claude can call, plus the function that executes it.
+// Each skill = a tool Gemini can call, plus the function that executes it.
 const SKILLS = [
   {
     schema: {

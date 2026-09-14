@@ -1,9 +1,15 @@
-const Anthropic = require('@anthropic-ai/sdk');
+const { GoogleGenAI } = require('@google/genai');
 const { pool } = require('./db');
 const { toolSchemas, toolMap } = require('./skills');
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = process.env.JARVIS_MODEL || 'claude-sonnet-4-6';
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const MODEL = process.env.JARVIS_MODEL || 'gemini-2.5-flash';
+
+const functionDeclarations = toolSchemas.map((s) => ({
+  name: s.name,
+  description: s.description,
+  parametersJsonSchema: s.input_schema,
+}));
 
 const ROLE = `You are Jarvis, the user's personal chief-of-staff and employee.
 
@@ -18,7 +24,10 @@ You are not able to browse the web, send money, or take real-world actions outsi
 
 async function loadHistory(limit = 30) {
   const [rows] = await pool.query('SELECT role, content FROM messages ORDER BY id DESC LIMIT ?', [limit]);
-  return rows.reverse().map((r) => ({ role: r.role, content: r.content }));
+  return rows.reverse().map((r) => ({
+    role: r.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: r.content }],
+  }));
 }
 
 async function saveMessage(role, content) {
@@ -27,48 +36,42 @@ async function saveMessage(role, content) {
 
 async function runAgent(userText) {
   await saveMessage('user', userText);
-  const history = await loadHistory();
-
-  let messages = [...history];
+  const contents = await loadHistory();
   let finalText = '';
 
-  // Agent loop: let Claude call tools until it produces a plain text answer.
+  // Agent loop: let Gemini call tools until it produces a plain text answer.
   for (let step = 0; step < 6; step++) {
-    const response = await anthropic.messages.create({
+    const response = await ai.models.generateContent({
       model: MODEL,
-      max_tokens: 1500,
-      system: ROLE,
-      tools: toolSchemas,
-      messages,
+      contents,
+      config: {
+        systemInstruction: ROLE,
+        tools: [{ functionDeclarations }],
+      },
     });
 
-    const toolUses = response.content.filter((b) => b.type === 'tool_use');
-    const textBlocks = response.content.filter((b) => b.type === 'text');
-    finalText = textBlocks.map((b) => b.text).join('\n');
+    const calls = response.functionCalls || [];
+    finalText = response.text || '';
 
-    if (toolUses.length === 0) {
+    if (calls.length === 0) {
       break; // Done — plain answer
     }
 
-    // Execute each tool call (async) and feed results back
-    messages.push({ role: 'assistant', content: response.content });
-    const toolResults = await Promise.all(
-      toolUses.map(async (tu) => {
+    // Echo the model's turn back, then execute each tool call and feed results back
+    contents.push(response.candidates[0].content);
+    const responseParts = await Promise.all(
+      calls.map(async (call) => {
         let result;
         try {
-          const fn = toolMap[tu.name];
-          result = fn ? await fn(tu.input) : { error: `Unknown tool ${tu.name}` };
+          const fn = toolMap[call.name];
+          result = fn ? await fn(call.args) : { error: `Unknown tool ${call.name}` };
         } catch (err) {
           result = { error: err.message };
         }
-        return {
-          type: 'tool_result',
-          tool_use_id: tu.id,
-          content: JSON.stringify(result),
-        };
+        return { functionResponse: { name: call.name, response: { result } } };
       })
     );
-    messages.push({ role: 'user', content: toolResults });
+    contents.push({ role: 'user', parts: responseParts });
   }
 
   await saveMessage('assistant', finalText);

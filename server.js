@@ -64,8 +64,8 @@ const wrap = (fn) => (req, res) => fn(req, res).catch((err) => {
 app.post('/api/chat', wrap(async (req, res) => {
   const { message } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'message is required' });
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not set on the server. Add it in your environment variables.' });
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(500).json({ error: 'GEMINI_API_KEY is not set on the server. Add it in your environment variables.' });
   }
   const reply = await runAgent(message);
   res.json({ reply });
@@ -98,8 +98,8 @@ initSchema()
   .then(() => {
     app.listen(PORT, () => {
       console.log(`Jarvis is running at http://localhost:${PORT}`);
-      if (!process.env.ANTHROPIC_API_KEY) {
-        console.warn('WARNING: ANTHROPIC_API_KEY not set. Add it in your environment variables.');
+      if (!process.env.GEMINI_API_KEY) {
+        console.warn('WARNING: GEMINI_API_KEY not set. Add it in your environment variables.');
       }
     });
   })

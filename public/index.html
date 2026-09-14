@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jarvis — Operations Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark"></span>
+    <span class="brand-name">JARVIS</span>
+  </div>
+  <div class="topbar-right">
+    <div class="status" id="status">
+      <span class="status-dot"></span>
+      <span id="status-text">checking connection…</span>
+    </div>
+    <button class="ghost-btn" id="logout-btn">log out</button>
+  </div>
+</header>
+
+<main class="deck">
+
+  <section class="chat-panel">
+    <div class="panel-head">
+      <h1>Chief of Staff</h1>
+      <p>Talk to Jarvis. He logs tasks, tracks projects, and pushes your money-making ideas forward as you go.</p>
+    </div>
+    <div id="chat-log" class="chat-log"></div>
+    <form id="chat-form" class="chat-form">
+      <input id="chat-input" type="text" placeholder="Tell Jarvis what's going on…" autocomplete="off" />
+      <button type="submit">Send</button>
+    </form>
+  </section>
+
+  <aside class="side-deck">
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Tasks</h2>
+        <button class="ghost-btn" id="add-task-btn">+ add</button>
+      </div>
+      <ul id="task-list" class="list"></ul>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Projects</h2>
+        <button class="ghost-btn" id="add-project-btn">+ add</button>
+      </div>
+      <ul id="project-list" class="list"></ul>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Journal</h2>
+      </div>
+      <ul id="journal-list" class="list list-compact"></ul>
+    </section>
+
+  </aside>
+
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

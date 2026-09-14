@@ -271,8 +271,18 @@
 
   micBtn.addEventListener('click', () => (enabled ? disable() : enable()));
 
-  // Push to talk: records immediately, no wake word needed.
+  // Push to talk: records immediately, no wake word or access key needed.
   talkBtn.addEventListener('click', () => runExchange());
+
+  // Spacebar does the same, unless you're typing in the command bar.
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' || e.repeat) return;
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+    e.preventDefault();
+    if (speechSynthesis.speaking) { speechSynthesis.cancel(); return; }
+    runExchange();
+  });
 
   speechSynthesis.addEventListener?.('voiceschanged', pickVoice);
   setState('OFFLINE');

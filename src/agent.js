@@ -3,7 +3,7 @@ const { pool } = require('./db');
 const { toolSchemas, toolMap } = require('./skills');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const MODEL = process.env.JARVIS_MODEL || 'gemini-2.5-flash';
+const MODEL = process.env.JARVIS_MODEL || 'gemini-3.6-flash';
 
 const functionDeclarations = toolSchemas.map((s) => ({
   name: s.name,

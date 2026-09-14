@@ -18,7 +18,7 @@
 
   const MAX_RECORD_MS = 10000;   // hard stop
   const SILENCE_MS = 1400;       // end of speech
-  const SILENCE_LEVEL = 0.012;   // RMS floor
+  const SILENCE_LEVEL = 0.006;   // RMS floor — quiet mics still count
 
   let porcupine = null;
   let wvp = null;
@@ -86,7 +86,7 @@
 
   /* ─────────── record one command ─────────── */
 
-  async function recordClip() {
+  async function recordClip(onLevel) {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const analyser = ctx.createAnalyser();
@@ -103,6 +103,7 @@
     const started = Date.now();
     let lastLoud = Date.now();
     let spoke = false;
+    let lastReport = 0;
     const buf = new Uint8Array(analyser.frequencyBinCount);
 
     await new Promise((resolve) => {
@@ -119,9 +120,14 @@
         const now = Date.now();
         if (level > SILENCE_LEVEL) { lastLoud = now; spoke = true; }
 
+        if (onLevel && now - lastReport > 120) {
+          lastReport = now;
+          onLevel(level, spoke);
+        }
+
         const quietLongEnough = spoke && now - lastLoud > SILENCE_MS;
         const tooLong = now - started > MAX_RECORD_MS;
-        const nothingAtAll = !spoke && now - started > 4000;
+        const nothingAtAll = !spoke && now - started > 6000;
 
         if (quietLongEnough || tooLong || nothingAtAll) return resolve();
         requestAnimationFrame(watch);
@@ -160,7 +166,11 @@
       if (coreState) coreState.textContent = 'LISTENING…';
       diag('recording');
 
-      const clip = await recordClip();
+      const clip = await recordClip((level, spoke) => {
+        const bars = '▁▂▃▄▅▆▇█';
+        const i = Math.min(bars.length - 1, Math.round(level * 90));
+        diag((spoke ? 'recording ' : 'waiting ') + bars[i].repeat(3));
+      });
       if (!clip) { diag('heard nothing'); return; }
 
       setState('TRANSCRIBING', 'var(--amber)');
@@ -186,7 +196,14 @@
       const reply = await window.Jarvis.send(text);
       if (reply) await speak(reply);
     } catch (err) {
-      diag('failed: ' + (err.name || err.message));
+      const reasons = {
+        NotAllowedError: 'allow mic access in chrome',
+        NotFoundError: 'no microphone detected',
+        NotReadableError: 'mic busy in another app',
+        SecurityError: 'needs https',
+      };
+      diag(reasons[err.name] || ('failed: ' + (err.name || err.message)));
+      setState('MIC BLOCKED', 'var(--danger)');
     } finally {
       recording = false;
       if (enabled) await resumeWakeWord();

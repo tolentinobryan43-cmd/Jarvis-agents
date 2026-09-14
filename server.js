@@ -55,7 +55,16 @@ function requireAuth(req, res, next) {
 }
 
 app.use(requireAuth);
-app.use(express.static(path.join(__dirname, 'public')));
+// Code must revalidate on every load, or a deploy leaves browsers running the
+// previous build. The wake-word model is large and immutable, so it may cache.
+app.use(
+  express.static(path.join(__dirname, 'public'), {
+    setHeaders: (res, filePath) => {
+      if (/\.(js|css|html)$/.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+      else if (filePath.endsWith('.pv')) res.setHeader('Cache-Control', 'public, max-age=604800');
+    },
+  })
+);
 
 // Wrap async route handlers so thrown errors become clean 500s instead of crashing
 const wrap = (fn) => (req, res) => fn(req, res).catch((err) => {

@@ -269,6 +269,21 @@ body::after {
 
 .ghost-btn.wide { width: 100%; margin-top: 7px; }
 
+.btn-row { display: flex; gap: 5px; }
+
+.diag {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid var(--line);
+  font-size: 7.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--amber);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .core-hint {
   margin-top: 7px;
   font-size: 8px;

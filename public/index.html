@@ -134,9 +134,13 @@
           <canvas id="wave" class="wave"></canvas>
           <div class="heard" id="voice-heard">—</div>
           <div class="kv"><span>WAKE WORD</span><b>HEY JARVIS</b></div>
-          <div class="kv"><span>LANGUAGE</span><b>EN-US</b></div>
+          <div class="kv"><span>HEARD</span><b id="voice-count">0</b></div>
           <div class="kv"><span>LOGGED</span><b id="sig-logged">0</b></div>
-          <button class="ghost-btn wide" id="mic-btn">enable mic</button>
+          <div class="diag" id="voice-diag">idle</div>
+          <div class="btn-row">
+            <button class="ghost-btn wide" id="mic-btn">enable mic</button>
+            <button class="ghost-btn wide" id="talk-btn">talk</button>
+          </div>
         </div>
       </div>
 

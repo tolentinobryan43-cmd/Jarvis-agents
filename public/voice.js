@@ -3,15 +3,17 @@
 (function () {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const micBtn = document.getElementById('mic-btn');
+  const talkBtn = document.getElementById('talk-btn');
   const stateEl = document.getElementById('voice-state');
   const heardEl = document.getElementById('voice-heard');
+  const diagEl = document.getElementById('voice-diag');
+  const countEl = document.getElementById('voice-count');
   const coreState = document.getElementById('core-state');
 
   // "jarvis" is routinely misheard; accept the usual neighbours.
   const WAKE = /\b(?:hey|hay|a|ok|okay)[,\s]+(jarvis|jervis|travis|charvis|jarvi{1,2}s|service)\b/i;
   const STOP_SPEAKING = /\b(?:stop|quiet|shut up|never mind)\b/i;
-
-  const ARM_WINDOW_MS = 9000;
+  const ARM_WINDOW_MS = 12000;
 
   let rec = null;
   let enabled = false;
@@ -22,27 +24,35 @@
   let audioCtx = null;
   let analyser = null;
   let micStream = null;
+  let meterOn = false;
+  let finals = 0;
 
-  function setState(text, cls) {
-    if (!stateEl) return;
-    stateEl.textContent = text;
-    stateEl.style.color = cls || '';
+  function setState(text, color) {
+    if (stateEl) { stateEl.textContent = text; stateEl.style.color = color || ''; }
   }
-
   function heard(text) {
     if (heardEl) heardEl.textContent = text ? '“' + text + '”' : '—';
+  }
+  function diag(text) {
+    if (diagEl) diagEl.textContent = text;
+  }
+  function bumpCount() {
+    finals++;
+    if (countEl) countEl.textContent = finals;
   }
 
   if (!SR) {
     setState('UNSUPPORTED', 'var(--danger)');
-    heard('Chrome or Edge required');
+    diag('needs chrome/edge');
     if (micBtn) { micBtn.disabled = true; micBtn.textContent = 'no speech api'; }
+    if (talkBtn) talkBtn.disabled = true;
     return;
   }
 
-  /* ─────────── mic level (drives the waveform) ─────────── */
+  /* ─────────── mic level meter (optional, drives the waveform) ─────────── */
 
   async function startMeter() {
+    if (meterOn) return;
     try {
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -50,11 +60,10 @@
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 512;
       src.connect(analyser);
+      meterOn = true;
       meter();
-      return true;
-    } catch {
-      setState('MIC DENIED', 'var(--danger)');
-      return false;
+    } catch (err) {
+      diag('meter off: ' + err.name);
     }
   }
 
@@ -73,9 +82,10 @@
 
   function stopMeter() {
     window.Jarvis.micLevel = 0;
+    meterOn = false;
     analyser = null;
     if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
-    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
   }
 
   /* ─────────── speech output ─────────── */
@@ -130,26 +140,41 @@
 
   function startRecognition() {
     if (!enabled || speaking || rec) return;
+
     rec = new SR();
     rec.continuous = true;
     rec.interimResults = true;
     rec.lang = 'en-US';
 
+    rec.onstart = () => diag('capturing');
+
     rec.onresult = (e) => {
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const result = e.results[i];
         const text = result[0].transcript.trim();
-        if (!result.isFinal) { heard(text); continue; }
         heard(text);
+        if (!result.isFinal) continue;
+        bumpCount();
         handleUtterance(text);
       }
     };
 
+    // Every failure is surfaced: a silent listener that never answers is worse
+    // than one that says why.
     rec.onerror = (e) => {
+      diag('err: ' + e.error);
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        setState('MIC DENIED', 'var(--danger)');
+        setState('MIC BLOCKED', 'var(--danger)');
         enabled = false;
         if (micBtn) micBtn.textContent = 'enable mic';
+        stopMeter();
+      } else if (e.error === 'audio-capture') {
+        // Usually the level meter holding the mic. Drop it and keep listening.
+        setState('RETRYING', 'var(--amber)');
+        stopMeter();
+        diag('mic busy — meter released');
+      } else if (e.error === 'network') {
+        setState('NO SPEECH SERVICE', 'var(--danger)');
       }
     };
 
@@ -158,16 +183,26 @@
       rec = null;
       if (enabled && !speaking) {
         clearTimeout(restartTimer);
-        restartTimer = setTimeout(startRecognition, 350);
+        restartTimer = setTimeout(startRecognition, 400);
       }
     };
 
-    try { rec.start(); } catch { rec = null; }
+    try {
+      rec.start();
+    } catch (err) {
+      diag('start failed: ' + err.name);
+      rec = null;
+      if (enabled) { clearTimeout(restartTimer); restartTimer = setTimeout(startRecognition, 800); }
+    }
   }
 
   function stopRecognition() {
     clearTimeout(restartTimer);
-    if (rec) { rec.onend = null; try { rec.stop(); } catch {} rec = null; }
+    if (rec) {
+      rec.onend = null;
+      try { rec.stop(); } catch {}
+      rec = null;
+    }
   }
 
   function disarm() {
@@ -188,6 +223,7 @@
   async function dispatch(command) {
     disarm();
     setState('TRANSMITTING', 'var(--amber)');
+    diag('sent: ' + command.slice(0, 32));
     const reply = await window.Jarvis.send(command);
     if (reply) speak(reply);
     else if (enabled) setState('LISTENING', 'var(--ok)');
@@ -196,6 +232,7 @@
   function handleUtterance(text) {
     if (speechSynthesis.speaking && STOP_SPEAKING.test(text)) {
       speechSynthesis.cancel();
+      diag('stopped');
       return;
     }
 
@@ -204,21 +241,27 @@
       // Anything after the wake word in the same breath is the command.
       const rest = text.slice(match.index + match[0].length).replace(/^[,.\s]+/, '');
       if (rest.split(/\s+/).filter(Boolean).length >= 2) dispatch(rest);
-      else arm();
+      else { arm(); diag('wake heard'); }
       return;
     }
 
     if (armed) dispatch(text);
+    else diag('no wake word');
   }
 
-  /* ─────────── toggle ─────────── */
+  /* ─────────── controls ─────────── */
 
   async function enable() {
-    if (!(await startMeter())) return;
     enabled = true;
+    finals = 0;
+    if (countEl) countEl.textContent = '0';
     micBtn.textContent = 'disable mic';
     setState('LISTENING', 'var(--ok)');
+    diag('starting…');
+
+    // Recognition first: it owns the mic, the meter is a nice-to-have.
     startRecognition();
+    setTimeout(startMeter, 600);
   }
 
   function disable() {
@@ -230,11 +273,21 @@
     micBtn.textContent = 'enable mic';
     setState('OFFLINE');
     heard('');
+    diag('idle');
   }
 
   micBtn.addEventListener('click', () => (enabled ? disable() : enable()));
 
-  // Voice list loads asynchronously in Chrome.
+  // Push to talk: skips the wake word entirely.
+  if (talkBtn) {
+    talkBtn.addEventListener('click', () => {
+      if (!enabled) { enable().then(() => setTimeout(arm, 400)); return; }
+      arm();
+      diag('push to talk');
+    });
+  }
+
   speechSynthesis.addEventListener?.('voiceschanged', pickVoice);
   setState('OFFLINE');
+  diag('idle');
 })();

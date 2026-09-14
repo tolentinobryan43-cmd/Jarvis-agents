@@ -1,31 +1,41 @@
-// Voice: on-device wake word (Porcupine) → record → transcribe (Gemini) → speak.
+// Voice: custom wake word (trained on your voice, in your browser) → record →
+// transcribe (Gemini) → speak.
 //
-// Chrome's Web Speech API was the previous approach and proved unreliable, so
-// nothing here depends on it. Porcupine detects "Jarvis" locally via WebAssembly;
-// the command itself is recorded and sent to our own /api/transcribe.
+// The wake word is a TensorFlow.js transfer model over the speech-commands base
+// network. It trains and runs entirely on this machine — no account, no service,
+// and no audio leaves the browser until a command is actually recorded.
 (function () {
-  const micBtn = document.getElementById('mic-btn');
-  const talkBtn = document.getElementById('talk-btn');
-  const stateEl = document.getElementById('voice-state');
-  const heardEl = document.getElementById('voice-heard');
-  const diagEl = document.getElementById('voice-diag');
-  const countEl = document.getElementById('voice-count');
-  const coreState = document.getElementById('core-state');
+  const $ = (id) => document.getElementById(id);
+  const micBtn = $('mic-btn');
+  const talkBtn = $('talk-btn');
+  const trainBtn = $('train-btn');
+  const stateEl = $('voice-state');
+  const heardEl = $('voice-heard');
+  const diagEl = $('voice-diag');
+  const countEl = $('voice-count');
+  const coreState = $('core-state');
 
-  const PORCUPINE_URL = 'https://cdn.jsdelivr.net/npm/@picovoice/porcupine-web@4.0.1/+esm';
-  const WVP_URL = 'https://cdn.jsdelivr.net/npm/@picovoice/web-voice-processor@4.0.10/+esm';
-  const MODEL_PATH = '/porcupine_params.pv';
+  const TFJS = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js';
+  const SPEECH = 'https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.5.4/dist/speech-commands.min.js';
 
-  const MAX_RECORD_MS = 10000;   // hard stop
-  const SILENCE_MS = 1400;       // end of speech
-  const SILENCE_LEVEL = 0.006;   // RMS floor — quiet mics still count
+  const WAKE = 'jarvis';
+  const NOISE = '_background_noise_';
+  const MODEL_NAME = 'jarvis-wake';
+  const WAKE_SAMPLES = 14;
+  const NOISE_SAMPLES = 12;
+  const THRESHOLD = 0.93;
+  const COOLDOWN_MS = 1500;
 
-  let porcupine = null;
-  let wvp = null;
-  let enabled = false;
-  let listening = false;   // wake word active
+  const MAX_RECORD_MS = 10000;
+  const SILENCE_MS = 1400;
+  const SILENCE_LEVEL = 0.006;
+
+  let base = null;
+  let wake = null;          // transfer recognizer
+  let trained = false;
+  let listening = false;
   let recording = false;
-  let speaking = false;
+  let lastFire = 0;
   let heardCount = 0;
   let activity = 0;
 
@@ -33,12 +43,37 @@
   const heard = (t) => { if (heardEl) heardEl.textContent = t ? '“' + t + '”' : '—'; };
   const diag = (t) => { if (diagEl) diagEl.textContent = t; };
 
-  // Waveform amplitude, shared with the HUD renderer.
   (function decay() {
     activity *= 0.92;
     window.Jarvis.micLevel = Math.max(window.Jarvis.micLevel || 0, activity) * 0.92;
     requestAnimationFrame(decay);
   })();
+
+  /* ─────────── library loading ─────────── */
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('cdn blocked'));
+      document.head.appendChild(s);
+    });
+  }
+
+  let libsPromise = null;
+  function loadLibs() {
+    if (!libsPromise) {
+      libsPromise = (async () => {
+        diag('loading engine…');
+        await loadScript(TFJS);
+        await loadScript(SPEECH);
+        base = window.speechCommands.create('BROWSER_FFT');
+        await base.ensureModelLoaded();
+      })();
+    }
+    return libsPromise;
+  }
 
   /* ─────────── speech out ─────────── */
 
@@ -69,14 +104,11 @@
       if (v) u.voice = v;
       u.rate = 1.03;
       u.pitch = 0.92;
-
       u.onstart = () => {
-        speaking = true;
         setState('SPEAKING', 'var(--amber)');
         if (coreState) coreState.textContent = 'SPEAKING';
       };
       u.onend = u.onerror = () => {
-        speaking = false;
         if (coreState) coreState.textContent = 'STANDING BY';
         resolve();
       };
@@ -96,7 +128,6 @@
     const chunks = [];
     const recorder = new MediaRecorder(stream);
     recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-
     const done = new Promise((resolve) => { recorder.onstop = resolve; });
     recorder.start();
 
@@ -119,17 +150,11 @@
 
         const now = Date.now();
         if (level > SILENCE_LEVEL) { lastLoud = now; spoke = true; }
+        if (onLevel && now - lastReport > 120) { lastReport = now; onLevel(level, spoke); }
 
-        if (onLevel && now - lastReport > 120) {
-          lastReport = now;
-          onLevel(level, spoke);
-        }
-
-        const quietLongEnough = spoke && now - lastLoud > SILENCE_MS;
-        const tooLong = now - started > MAX_RECORD_MS;
-        const nothingAtAll = !spoke && now - started > 6000;
-
-        if (quietLongEnough || tooLong || nothingAtAll) return resolve();
+        if ((spoke && now - lastLoud > SILENCE_MS) ||
+            now - started > MAX_RECORD_MS ||
+            (!spoke && now - started > 6000)) return resolve();
         requestAnimationFrame(watch);
       })();
     });
@@ -139,8 +164,7 @@
     stream.getTracks().forEach((t) => t.stop());
     ctx.close().catch(() => {});
 
-    if (!spoke) return null;
-    return new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+    return spoke ? new Blob(chunks, { type: recorder.mimeType || 'audio/webm' }) : null;
   }
 
   function blobToBase64(blob) {
@@ -157,14 +181,12 @@
   async function runExchange() {
     if (recording) return;
     recording = true;
-
-    // Release the mic from the wake-word engine while we record.
-    await suspendWakeWord();
+    const wasListening = listening;
+    await stopListening();   // the wake model holds the mic; let it go
 
     try {
       setState('LISTENING…', 'var(--ice)');
       if (coreState) coreState.textContent = 'LISTENING…';
-      diag('recording');
 
       const clip = await recordClip((level, spoke) => {
         const bars = '▁▂▃▄▅▆▇█';
@@ -203,95 +225,179 @@
         SecurityError: 'needs https',
       };
       diag(reasons[err.name] || ('failed: ' + (err.name || err.message)));
-      setState('MIC BLOCKED', 'var(--danger)');
     } finally {
       recording = false;
-      if (enabled) await resumeWakeWord();
+      lastFire = Date.now();
+      if (wasListening) await startListening();
       else setState('OFFLINE');
     }
   }
 
   /* ─────────── wake word ─────────── */
 
-  async function suspendWakeWord() {
-    if (wvp && porcupine && listening) {
-      try { await wvp.unsubscribe(porcupine); } catch {}
+  async function startListening() {
+    if (!trained || listening || recording) return;
+    try {
+      await wake.listen(
+        (result) => {
+          const labels = wake.wordLabels();
+          const scores = Array.from(result.scores);
+          const i = labels.indexOf(WAKE);
+          const score = i >= 0 ? scores[i] : 0;
+          activity = Math.max(activity, 0.25);
+          if (score >= THRESHOLD && Date.now() - lastFire > COOLDOWN_MS) {
+            lastFire = Date.now();
+            diag('woke (' + score.toFixed(2) + ')');
+            runExchange();
+          }
+        },
+        { probabilityThreshold: THRESHOLD, overlapFactor: 0.5, invokeCallbackOnNoiseAndUnknown: false }
+      );
+      listening = true;
+      setState('LISTENING', 'var(--ok)');
+      diag('say “jarvis”');
+      micBtn.textContent = 'disable mic';
+    } catch (err) {
+      diag('listen failed: ' + (err.name || err.message));
+    }
+  }
+
+  async function stopListening() {
+    if (wake && listening) {
+      try { await wake.stopListening(); } catch {}
       listening = false;
     }
   }
 
-  async function resumeWakeWord() {
-    if (wvp && porcupine && !listening && !recording) {
-      try {
-        await wvp.subscribe(porcupine);
-        listening = true;
-        setState('LISTENING', 'var(--ok)');
-        diag('say “jarvis”');
-      } catch (err) {
-        diag('resume failed: ' + err.message);
-      }
-    }
-  }
-
-  async function initWakeWord() {
-    setState('STARTING', 'var(--amber)');
-    diag('fetching key…');
-
-    const cfg = await (await fetch('/api/config')).json();
-    if (!cfg.picovoiceKey) {
-      setState('NO WAKE KEY', 'var(--danger)');
-      diag('set PICOVOICE_ACCESS_KEY');
+  async function ensureModel() {
+    await loadLibs();
+    if (!wake) wake = base.createTransfer(MODEL_NAME);
+    if (trained) return true;
+    try {
+      await wake.load();            // restores a model trained in an earlier session
+      trained = true;
+      return true;
+    } catch {
       return false;
     }
-
-    diag('loading engine…');
-    const [pv, wv] = await Promise.all([import(PORCUPINE_URL), import(WVP_URL)]);
-
-    porcupine = await pv.PorcupineWorker.create(
-      cfg.picovoiceKey,
-      { builtin: pv.BuiltInKeyword.Jarvis, sensitivity: 0.7 },
-      () => { activity = 0.6; runExchange(); },
-      { publicPath: MODEL_PATH }
-    );
-
-    wvp = wv.WebVoiceProcessor;
-    return true;
   }
+
+  /* ─────────── training ─────────── */
+
+  const overlay = $('train-overlay');
+  const tStep = $('train-step');
+  const tPrompt = $('train-prompt');
+  const tBar = $('train-bar');
+  const tHint = $('train-hint');
+  const tAction = $('train-action');
+
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function collect(label, n, promptText, hintText) {
+    for (let i = 0; i < n; i++) {
+      tPrompt.textContent = promptText;
+      tHint.textContent = hintText;
+      tStep.textContent = `${label === WAKE ? 'WAKE WORD' : 'ROOM NOISE'} — ${i + 1} / ${n}`;
+      tBar.style.width = ((i / n) * 100).toFixed(0) + '%';
+
+      tPrompt.classList.remove('live');
+      await wait(550);
+      tPrompt.classList.add('live');      // cue to speak
+      await wake.collectExample(label);
+    }
+    tPrompt.classList.remove('live');
+    tBar.style.width = '100%';
+  }
+
+  async function runTraining() {
+    overlay.hidden = false;
+    tAction.disabled = true;
+    tAction.textContent = 'working…';
+
+    try {
+      await loadLibs();
+      // The recognizer is created once at load; re-creating it throws.
+      if (!wake) wake = base.createTransfer(MODEL_NAME);
+      try { wake.clearExamples(); } catch {}
+
+      tStep.textContent = 'PREPARING';
+      tPrompt.textContent = '◌';
+      tHint.textContent = 'Allow microphone access if asked.';
+
+      await collect(WAKE, WAKE_SAMPLES, 'JARVIS',
+        'Say it out loud each time the word lights up. Vary your tone a little.');
+
+      await collect(NOISE, NOISE_SAMPLES, '· · ·',
+        'Stay quiet, or talk about something else. This teaches it what to ignore.');
+
+      tStep.textContent = 'TRAINING';
+      tPrompt.textContent = '◐';
+      tHint.textContent = 'Building the model on your machine…';
+
+      await wake.train({
+        epochs: 32,
+        callback: {
+          onEpochEnd: async (epoch, logs) => {
+            tBar.style.width = (((epoch + 1) / 32) * 100).toFixed(0) + '%';
+            tHint.textContent = `epoch ${epoch + 1}/32 · accuracy ${(logs.acc * 100).toFixed(0)}%`;
+          },
+        },
+      });
+
+      await wake.save();
+      trained = true;
+
+      tStep.textContent = 'READY';
+      tPrompt.textContent = '✓';
+      tHint.textContent = 'Wake word trained and saved to this browser.';
+      tAction.textContent = 'close';
+      tAction.disabled = false;
+
+      await startListening();
+    } catch (err) {
+      tStep.textContent = 'FAILED';
+      tPrompt.textContent = '✕';
+      tHint.textContent = err.name === 'NotAllowedError'
+        ? 'Microphone access denied.'
+        : (err.message || 'training failed');
+      tAction.textContent = 'close';
+      tAction.disabled = false;
+    }
+  }
+
+  tAction.addEventListener('click', () => {
+    if (tAction.textContent === 'close') overlay.hidden = true;
+  });
+  $('train-cancel').addEventListener('click', () => { overlay.hidden = true; });
+  trainBtn.addEventListener('click', runTraining);
 
   /* ─────────── controls ─────────── */
 
-  async function enable() {
+  micBtn.addEventListener('click', async () => {
+    if (listening) {
+      await stopListening();
+      micBtn.textContent = 'enable mic';
+      setState('OFFLINE');
+      diag('idle');
+      return;
+    }
     micBtn.disabled = true;
     try {
-      if (!porcupine && !(await initWakeWord())) { micBtn.disabled = false; return; }
-      enabled = true;
-      micBtn.textContent = 'disable mic';
-      await resumeWakeWord();
+      if (await ensureModel()) await startListening();
+      else {
+        setState('NOT TRAINED', 'var(--amber)');
+        diag('press train first');
+      }
     } catch (err) {
       setState('FAILED', 'var(--danger)');
-      diag(err.message ? err.message.slice(0, 44) : 'init error');
-      enabled = false;
+      diag((err.message || 'error').slice(0, 40));
     } finally {
       micBtn.disabled = false;
     }
-  }
+  });
 
-  async function disable() {
-    enabled = false;
-    await suspendWakeWord();
-    speechSynthesis.cancel();
-    micBtn.textContent = 'enable mic';
-    setState('OFFLINE');
-    heard('');
-    diag('idle');
-  }
-
-  micBtn.addEventListener('click', () => (enabled ? disable() : enable()));
-
-  // Push to talk: records immediately, no wake word or access key needed.
   talkBtn.addEventListener('click', () => runExchange());
 
-  // Spacebar does the same, unless you're typing in the command bar.
   document.addEventListener('keydown', (e) => {
     if (e.code !== 'Space' || e.repeat) return;
     const el = document.activeElement;
@@ -303,5 +409,10 @@
 
   speechSynthesis.addEventListener?.('voiceschanged', pickVoice);
   setState('OFFLINE');
-  diag('idle');
+  diag('press space to talk');
+
+  // Surface a model trained in a previous session without grabbing the mic.
+  ensureModel()
+    .then((ok) => diag(ok ? 'wake word ready — enable mic' : 'press space to talk'))
+    .catch(() => diag('press space to talk'));
 })();

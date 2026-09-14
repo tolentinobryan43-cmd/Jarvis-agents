@@ -31,6 +31,7 @@ const LOGIN_HTML = page('login.html');
 function sendPage(res, html) {
   res.set('Cache-Control', 'no-store').type('html').send(html);
 }
+
 app.use(cors({ origin: true, credentials: true }));
 // Voice clips arrive as base64 in the JSON body, so the default 100kb cap is
 // far too small.
@@ -77,12 +78,11 @@ app.use(requireAuth);
 app.get('/', (req, res) => sendPage(res, INDEX_HTML));
 
 // Code must revalidate on every load, or a deploy leaves browsers running the
-// previous build. The wake-word model is large and immutable, so it may cache.
+// previous build.
 app.use(
   express.static(path.join(__dirname, 'public'), {
     setHeaders: (res, filePath) => {
       if (/\.(js|css|html)$/.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
-      else if (filePath.endsWith('.pv')) res.setHeader('Cache-Control', 'public, max-age=604800');
     },
   })
 );
@@ -104,7 +104,7 @@ app.post('/api/chat', wrap(async (req, res) => {
   res.json({ reply });
 }));
 
-// --- Voice: transcribe a recorded clip, and hand the browser its wake-word key ---
+// --- Voice: transcribe a recorded clip ---
 app.post('/api/transcribe', wrap(async (req, res) => {
   const { audio, mimeType } = req.body || {};
   if (!audio) return res.status(400).json({ error: 'audio is required' });
@@ -113,10 +113,6 @@ app.post('/api/transcribe', wrap(async (req, res) => {
   }
   res.json({ text: await transcribe(audio, mimeType) });
 }));
-
-app.get('/api/config', (req, res) => {
-  res.json({ picovoiceKey: process.env.PICOVOICE_ACCESS_KEY || '' });
-});
 
 app.get('/api/messages', wrap(async (req, res) => {
   const [rows] = await pool.query('SELECT * FROM messages ORDER BY id ASC');

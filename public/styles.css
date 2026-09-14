@@ -542,3 +542,91 @@ body::after {
   .core-id, .chat-log, .cmd { position: static; transform: none; width: auto; margin: 10px; }
   .chat-log { max-height: 340px; }
 }
+
+/* ───────── wake word training ───────── */
+
+.train-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: rgba(1, 5, 10, 0.86);
+  backdrop-filter: blur(4px);
+}
+
+.train-card {
+  position: relative;
+  width: min(420px, calc(100vw - 32px));
+  border: 1px solid var(--line-mid);
+  background: rgba(3, 11, 18, 0.96);
+  box-shadow: 0 0 70px rgba(0, 0, 0, 0.9);
+  padding: 0 0 14px;
+  text-align: center;
+}
+
+.train-card::before, .train-card::after {
+  content: '';
+  position: absolute;
+  width: 11px; height: 11px;
+}
+.train-card::before { top: -1px; left: -1px; border-top: 1px solid var(--line-hot); border-left: 1px solid var(--line-hot); }
+.train-card::after { bottom: -1px; right: -1px; border-bottom: 1px solid var(--line-hot); border-right: 1px solid var(--line-hot); }
+
+.train-head {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 7.5px;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--ice-2);
+  text-align: left;
+}
+
+.train-step {
+  margin-top: 16px;
+  font-size: 8.5px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.train-prompt {
+  margin: 14px 0 18px;
+  font-size: 30px;
+  letter-spacing: 0.4em;
+  text-indent: 0.4em;
+  color: var(--ice-2);
+  transition: color 0.12s, text-shadow 0.12s, transform 0.12s;
+}
+
+.train-prompt.live {
+  color: #ffffff;
+  text-shadow: 0 0 34px rgba(150, 215, 255, 0.95);
+  transform: scale(1.06);
+}
+
+.train-bar {
+  height: 2px;
+  margin: 0 18px;
+  background: rgba(150, 215, 255, 0.12);
+}
+.train-bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--ice);
+  box-shadow: 0 0 10px rgba(150, 215, 255, 0.7);
+  transition: width 0.25s ease;
+}
+
+.train-hint {
+  margin: 12px 18px 14px;
+  font-size: 9px;
+  line-height: 1.7;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  min-height: 30px;
+}
+
+.train-card .btn-row { padding: 0 18px; }

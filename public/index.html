@@ -141,6 +141,7 @@
             <button class="ghost-btn wide" id="mic-btn">enable mic</button>
             <button class="ghost-btn wide" id="talk-btn">talk ⎵</button>
           </div>
+          <button class="ghost-btn wide" id="train-btn">train wake word</button>
         </div>
       </div>
 
@@ -191,6 +192,21 @@
     </aside>
 
   </main>
+
+  <!-- ══════════ WAKE WORD TRAINING ══════════ -->
+  <div class="train-overlay" id="train-overlay" hidden>
+    <div class="train-card">
+      <div class="train-head">| TRAIN WAKE WORD</div>
+      <div class="train-step" id="train-step">READY</div>
+      <div class="train-prompt" id="train-prompt">◌</div>
+      <div class="train-bar"><i id="train-bar"></i></div>
+      <div class="train-hint" id="train-hint">Runs entirely on this machine. Nothing is uploaded.</div>
+      <div class="btn-row">
+        <button class="ghost-btn wide" id="train-action">working…</button>
+        <button class="ghost-btn wide" id="train-cancel">cancel</button>
+      </div>
+    </div>
+  </div>
 
   <footer class="foot">
     <span>JARVIS</span><i>//</i><span>ASSIST</span><i>·</i><span>ANALYZE</span><i>·</i><span>EVOLVE</span>

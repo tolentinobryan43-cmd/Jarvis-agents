@@ -1,11 +1,9 @@
-// Wake-word listening + spoken replies, built on the browser's Web Speech API.
-// Chrome/Edge only: Firefox has no SpeechRecognition implementation.
+// Voice: on-device wake word (Porcupine) → record → transcribe (Gemini) → speak.
 //
-// Deliberately does NOT call getUserMedia. Holding the microphone with a media
-// stream blocks Chrome's own speech capture, which silently kills recognition.
-// The waveform is driven by speech events instead.
+// Chrome's Web Speech API was the previous approach and proved unreliable, so
+// nothing here depends on it. Porcupine detects "Jarvis" locally via WebAssembly;
+// the command itself is recorded and sent to our own /api/transcribe.
 (function () {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const micBtn = document.getElementById('mic-btn');
   const talkBtn = document.getElementById('talk-btn');
   const stateEl = document.getElementById('voice-state');
@@ -14,57 +12,45 @@
   const countEl = document.getElementById('voice-count');
   const coreState = document.getElementById('core-state');
 
-  // "jarvis" is routinely misheard. Accept it bare at the start of an utterance
-  // as well as after a greeting — requiring "hey" doubles the chances of a miss.
-  const NAME = '(?:jarvis|jervis|travis|charvis|jarviss|jarviz|service|harvest)';
-  const WAKE = new RegExp('\\b(?:hey|hay|hi|ok|okay|yo|a)[,\\s]+' + NAME + '\\b', 'i');
-  const BARE = new RegExp('^\\s*' + NAME + '\\b[,\\s]*', 'i');
-  const STOP_SPEAKING = /\b(?:stop|quiet|shut up|never mind|nevermind)\b/i;
+  const PORCUPINE_URL = 'https://cdn.jsdelivr.net/npm/@picovoice/porcupine-web@4.0.1/+esm';
+  const WVP_URL = 'https://cdn.jsdelivr.net/npm/@picovoice/web-voice-processor@4.0.10/+esm';
+  const MODEL_PATH = '/porcupine_params.pv';
 
-  const ARM_WINDOW_MS = 12000;
+  const MAX_RECORD_MS = 10000;   // hard stop
+  const SILENCE_MS = 1400;       // end of speech
+  const SILENCE_LEVEL = 0.012;   // RMS floor
 
-  let rec = null;
+  let porcupine = null;
+  let wvp = null;
   let enabled = false;
-  let armed = false;
-  let armTimer = null;
+  let listening = false;   // wake word active
+  let recording = false;
   let speaking = false;
-  let restartTimer = null;
-  let backoff = 300;
-  let finals = 0;
+  let heardCount = 0;
   let activity = 0;
 
   const setState = (t, c) => { if (stateEl) { stateEl.textContent = t; stateEl.style.color = c || ''; } };
   const heard = (t) => { if (heardEl) heardEl.textContent = t ? '“' + t + '”' : '—'; };
   const diag = (t) => { if (diagEl) diagEl.textContent = t; };
 
-  if (!SR) {
-    setState('UNSUPPORTED', 'var(--danger)');
-    diag('needs chrome or edge');
-    if (micBtn) { micBtn.disabled = true; micBtn.textContent = 'no speech api'; }
-    if (talkBtn) talkBtn.disabled = true;
-    return;
-  }
-
-  // Waveform reacts to speech events rather than a mic stream.
+  // Waveform amplitude, shared with the HUD renderer.
   (function decay() {
-    activity *= 0.93;
-    window.Jarvis.micLevel = activity;
+    activity *= 0.92;
+    window.Jarvis.micLevel = Math.max(window.Jarvis.micLevel || 0, activity) * 0.92;
     requestAnimationFrame(decay);
   })();
 
-  /* ─────────── speech output ─────────── */
+  /* ─────────── speech out ─────────── */
 
   function pickVoice() {
     const voices = speechSynthesis.getVoices();
-    const preferred = ['Daniel', 'Google UK English Male', 'Arthur', 'Oliver', 'Alex'];
-    for (const name of preferred) {
+    for (const name of ['Daniel', 'Google UK English Male', 'Arthur', 'Oliver', 'Alex']) {
       const v = voices.find((x) => x.name.includes(name));
       if (v) return v;
     }
     return voices.find((v) => v.lang && v.lang.startsWith('en')) || null;
   }
 
-  // Markdown reads badly aloud — strip it to plain prose.
   function forSpeech(text) {
     return text
       .replace(/```[\s\S]*?```/g, ' code block ')
@@ -75,182 +61,208 @@
   }
 
   function speak(text) {
-    if (!text) return;
-    speechSynthesis.cancel();
+    return new Promise((resolve) => {
+      if (!text) return resolve();
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(forSpeech(text));
+      const v = pickVoice();
+      if (v) u.voice = v;
+      u.rate = 1.03;
+      u.pitch = 0.92;
 
-    const u = new SpeechSynthesisUtterance(forSpeech(text));
-    const v = pickVoice();
-    if (v) u.voice = v;
-    u.rate = 1.03;
-    u.pitch = 0.92;
-
-    // Stop listening while talking so Jarvis doesn't transcribe himself.
-    u.onstart = () => {
-      speaking = true;
-      activity = 0.5;
-      setState('SPEAKING', 'var(--amber)');
-      if (coreState) coreState.textContent = 'SPEAKING';
-      stopRecognition();
-    };
-    u.onend = u.onerror = () => {
-      speaking = false;
-      activity = 0;
-      if (coreState) coreState.textContent = 'STANDING BY';
-      if (enabled) { setState('LISTENING', 'var(--ok)'); startRecognition(); }
-    };
-
-    speechSynthesis.speak(u);
+      u.onstart = () => {
+        speaking = true;
+        setState('SPEAKING', 'var(--amber)');
+        if (coreState) coreState.textContent = 'SPEAKING';
+      };
+      u.onend = u.onerror = () => {
+        speaking = false;
+        if (coreState) coreState.textContent = 'STANDING BY';
+        resolve();
+      };
+      speechSynthesis.speak(u);
+    });
   }
 
-  /* ─────────── recognition ─────────── */
+  /* ─────────── record one command ─────────── */
 
-  function startRecognition() {
-    if (!enabled || speaking || rec) return;
+  async function recordClip() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    ctx.createMediaStreamSource(stream).connect(analyser);
 
-    rec = new SR();
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.lang = 'en-US';
+    const chunks = [];
+    const recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
 
-    rec.onstart = () => { backoff = 300; diag('capturing'); };
+    const done = new Promise((resolve) => { recorder.onstop = resolve; });
+    recorder.start();
 
-    rec.onresult = (e) => {
-      activity = 0.55;
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const result = e.results[i];
-        const text = result[0].transcript.trim();
-        heard(text);
-        if (!result.isFinal) continue;
-        finals++;
-        if (countEl) countEl.textContent = finals;
-        handleUtterance(text);
-      }
-    };
+    const started = Date.now();
+    let lastLoud = Date.now();
+    let spoke = false;
+    const buf = new Uint8Array(analyser.frequencyBinCount);
 
-    rec.onerror = (e) => {
-      switch (e.error) {
-        case 'no-speech':
-          diag('silence');              // normal; onend restarts
-          break;
-        case 'aborted':
-          diag('aborted — restarting');
-          break;
-        case 'not-allowed':
-        case 'service-not-allowed':
-          setState('MIC BLOCKED', 'var(--danger)');
-          diag('allow mic for this site');
-          enabled = false;
-          if (micBtn) micBtn.textContent = 'enable mic';
-          break;
-        case 'audio-capture':
-          setState('NO MICROPHONE', 'var(--danger)');
-          diag('no input device');
-          break;
-        case 'network':
-          setState('NO SPEECH SERVICE', 'var(--danger)');
-          diag('cannot reach speech api');
-          break;
-        default:
-          diag('err: ' + e.error);
-      }
-    };
+    await new Promise((resolve) => {
+      (function watch() {
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const v = (buf[i] - 128) / 128;
+          sum += v * v;
+        }
+        const level = Math.sqrt(sum / buf.length);
+        activity = Math.max(activity, level * 3);
 
-    // Chrome ends the stream on its own after silence; bring it straight back.
-    rec.onend = () => {
-      rec = null;
-      if (!enabled || speaking) return;
-      clearTimeout(restartTimer);
-      restartTimer = setTimeout(startRecognition, backoff);
-    };
+        const now = Date.now();
+        if (level > SILENCE_LEVEL) { lastLoud = now; spoke = true; }
+
+        const quietLongEnough = spoke && now - lastLoud > SILENCE_MS;
+        const tooLong = now - started > MAX_RECORD_MS;
+        const nothingAtAll = !spoke && now - started > 4000;
+
+        if (quietLongEnough || tooLong || nothingAtAll) return resolve();
+        requestAnimationFrame(watch);
+      })();
+    });
+
+    recorder.stop();
+    await done;
+    stream.getTracks().forEach((t) => t.stop());
+    ctx.close().catch(() => {});
+
+    if (!spoke) return null;
+    return new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+  }
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(',')[1]);
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
+  }
+
+  /* ─────────── the exchange ─────────── */
+
+  async function runExchange() {
+    if (recording) return;
+    recording = true;
+
+    // Release the mic from the wake-word engine while we record.
+    await suspendWakeWord();
 
     try {
-      rec.start();
+      setState('LISTENING…', 'var(--ice)');
+      if (coreState) coreState.textContent = 'LISTENING…';
+      diag('recording');
+
+      const clip = await recordClip();
+      if (!clip) { diag('heard nothing'); return; }
+
+      setState('TRANSCRIBING', 'var(--amber)');
+      diag('transcribing ' + Math.round(clip.size / 1024) + 'kb');
+
+      const res = await fetch('/api/transcribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio: await blobToBase64(clip), mimeType: clip.type.split(';')[0] }),
+      });
+      const data = await res.json();
+      const text = (data.text || '').trim();
+
+      if (data.error) { diag('error: ' + data.error); return; }
+      if (!text) { diag('no speech found'); return; }
+
+      heard(text);
+      heardCount++;
+      if (countEl) countEl.textContent = heardCount;
+
+      setState('TRANSMITTING', 'var(--amber)');
+      diag('sent');
+      const reply = await window.Jarvis.send(text);
+      if (reply) await speak(reply);
     } catch (err) {
-      rec = null;
-      backoff = Math.min(backoff * 2, 5000);
-      diag('restart in ' + backoff + 'ms');
-      clearTimeout(restartTimer);
-      restartTimer = setTimeout(startRecognition, backoff);
+      diag('failed: ' + (err.name || err.message));
+    } finally {
+      recording = false;
+      if (enabled) await resumeWakeWord();
+      else setState('OFFLINE');
     }
   }
 
-  function stopRecognition() {
-    clearTimeout(restartTimer);
-    if (rec) {
-      rec.onend = null;
-      try { rec.stop(); } catch {}
-      rec = null;
+  /* ─────────── wake word ─────────── */
+
+  async function suspendWakeWord() {
+    if (wvp && porcupine && listening) {
+      try { await wvp.unsubscribe(porcupine); } catch {}
+      listening = false;
     }
   }
 
-  /* ─────────── wake word + dispatch ─────────── */
-
-  function disarm() {
-    armed = false;
-    clearTimeout(armTimer);
-    if (enabled && !speaking) setState('LISTENING', 'var(--ok)');
-    if (coreState && !speaking) coreState.textContent = 'STANDING BY';
+  async function resumeWakeWord() {
+    if (wvp && porcupine && !listening && !recording) {
+      try {
+        await wvp.subscribe(porcupine);
+        listening = true;
+        setState('LISTENING', 'var(--ok)');
+        diag('say “jarvis”');
+      } catch (err) {
+        diag('resume failed: ' + err.message);
+      }
+    }
   }
 
-  function arm(reason) {
-    armed = true;
-    setState('AWAITING COMMAND', 'var(--ice)');
-    if (coreState) coreState.textContent = 'LISTENING…';
-    diag(reason || 'wake heard');
-    clearTimeout(armTimer);
-    armTimer = setTimeout(disarm, ARM_WINDOW_MS);
-  }
+  async function initWakeWord() {
+    setState('STARTING', 'var(--amber)');
+    diag('fetching key…');
 
-  async function dispatch(command) {
-    disarm();
-    setState('TRANSMITTING', 'var(--amber)');
-    diag('sent: ' + command.slice(0, 30));
-    const reply = await window.Jarvis.send(command);
-    if (reply) speak(reply);
-    else if (enabled) setState('LISTENING', 'var(--ok)');
-  }
-
-  function handleUtterance(text) {
-    if (speechSynthesis.speaking && STOP_SPEAKING.test(text)) {
-      speechSynthesis.cancel();
-      diag('stopped');
-      return;
+    const cfg = await (await fetch('/api/config')).json();
+    if (!cfg.picovoiceKey) {
+      setState('NO WAKE KEY', 'var(--danger)');
+      diag('set PICOVOICE_ACCESS_KEY');
+      return false;
     }
 
-    // "hey jarvis ..." anywhere, or "jarvis ..." opening the utterance.
-    const m = text.match(WAKE);
-    const bare = m ? null : text.match(BARE);
+    diag('loading engine…');
+    const [pv, wv] = await Promise.all([import(PORCUPINE_URL), import(WVP_URL)]);
 
-    if (m || bare) {
-      const cut = m ? m.index + m[0].length : bare[0].length;
-      const rest = text.slice(cut).replace(/^[,.\s]+/, '');
-      if (rest.split(/\s+/).filter(Boolean).length >= 2) dispatch(rest);
-      else arm();
-      return;
-    }
+    porcupine = await pv.PorcupineWorker.create(
+      cfg.picovoiceKey,
+      { builtin: pv.BuiltInKeyword.Jarvis, sensitivity: 0.7 },
+      () => { activity = 0.6; runExchange(); },
+      { publicPath: MODEL_PATH }
+    );
 
-    if (armed) dispatch(text);
-    else diag('heard, no wake word');
+    wvp = wv.WebVoiceProcessor;
+    return true;
   }
 
   /* ─────────── controls ─────────── */
 
-  function enable() {
-    enabled = true;
-    finals = 0;
-    backoff = 300;
-    if (countEl) countEl.textContent = '0';
-    micBtn.textContent = 'disable mic';
-    setState('LISTENING', 'var(--ok)');
-    diag('starting…');
-    startRecognition();
+  async function enable() {
+    micBtn.disabled = true;
+    try {
+      if (!porcupine && !(await initWakeWord())) { micBtn.disabled = false; return; }
+      enabled = true;
+      micBtn.textContent = 'disable mic';
+      await resumeWakeWord();
+    } catch (err) {
+      setState('FAILED', 'var(--danger)');
+      diag(err.message ? err.message.slice(0, 44) : 'init error');
+      enabled = false;
+    } finally {
+      micBtn.disabled = false;
+    }
   }
 
-  function disable() {
+  async function disable() {
     enabled = false;
-    stopRecognition();
+    await suspendWakeWord();
     speechSynthesis.cancel();
-    disarm();
     micBtn.textContent = 'enable mic';
     setState('OFFLINE');
     heard('');
@@ -259,13 +271,8 @@
 
   micBtn.addEventListener('click', () => (enabled ? disable() : enable()));
 
-  // Push to talk: skips the wake word entirely.
-  if (talkBtn) {
-    talkBtn.addEventListener('click', () => {
-      if (!enabled) enable();
-      arm('push to talk — speak now');
-    });
-  }
+  // Push to talk: records immediately, no wake word needed.
+  talkBtn.addEventListener('click', () => runExchange());
 
   speechSynthesis.addEventListener?.('voiceschanged', pickVoice);
   setState('OFFLINE');

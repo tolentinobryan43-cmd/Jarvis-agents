@@ -6,13 +6,16 @@ const path = require('path');
 
 const { pool, initSchema } = require('./src/db');
 const { runAgent } = require('./src/agent');
+const { transcribe } = require('./src/transcribe');
 const tasks = require('./src/skills/tasks');
 const projects = require('./src/skills/projects');
 const journal = require('./src/skills/journal');
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json());
+// Voice clips arrive as base64 in the JSON body, so the default 100kb cap is
+// far too small.
+app.use(express.json({ limit: '25mb' }));
 app.use(
   session({
     secret: process.env.SESSION_SECRET || 'insecure-dev-secret-change-me',
@@ -70,6 +73,20 @@ app.post('/api/chat', wrap(async (req, res) => {
   const reply = await runAgent(message);
   res.json({ reply });
 }));
+
+// --- Voice: transcribe a recorded clip, and hand the browser its wake-word key ---
+app.post('/api/transcribe', wrap(async (req, res) => {
+  const { audio, mimeType } = req.body || {};
+  if (!audio) return res.status(400).json({ error: 'audio is required' });
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(500).json({ error: 'GEMINI_API_KEY is not set on the server.' });
+  }
+  res.json({ text: await transcribe(audio, mimeType) });
+}));
+
+app.get('/api/config', (req, res) => {
+  res.json({ picovoiceKey: process.env.PICOVOICE_ACCESS_KEY || '' });
+});
 
 app.get('/api/messages', wrap(async (req, res) => {
   const [rows] = await pool.query('SELECT * FROM messages ORDER BY id ASC');

@@ -3,70 +3,194 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Jarvis — Operations Desk</title>
+<title>JARVIS — Operations Desk</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark"></span>
-    <span class="brand-name">JARVIS</span>
-  </div>
-  <div class="topbar-right">
-    <div class="status" id="status">
-      <span class="status-dot"></span>
-      <span id="status-text">checking connection…</span>
+<div class="sweep"></div>
+<div class="vignette"></div>
+
+<div class="shell">
+
+  <!-- ══════════ TOP RAIL ══════════ -->
+  <header class="rail">
+    <div class="brand">
+      <svg width="20" height="22" viewBox="0 0 17 19" fill="none" aria-hidden="true">
+        <path d="M8.5 1 16 5.25v8.5L8.5 18 1 13.75v-8.5L8.5 1Z" stroke="#a8dcff" stroke-width="1"/>
+        <path d="M8.5 4.6 13.2 7.3v5.4L8.5 15.4 3.8 12.7V7.3L8.5 4.6Z" stroke="#a8dcff" stroke-width=".7" stroke-opacity=".6"/>
+        <circle cx="8.5" cy="10" r="2.1" fill="#a8dcff"/>
+      </svg>
+      <span>JARVIS</span>
     </div>
-    <button class="ghost-btn" id="logout-btn">log out</button>
-  </div>
-</header>
 
-<main class="deck">
+    <span class="rail-sep"></span>
+    <div class="rail-state">SYSTEM <b id="rail-state">ONLINE</b> <span class="sl">//</span> AWAKE</div>
 
-  <section class="chat-panel">
-    <div class="panel-head">
-      <h1>Chief of Staff</h1>
-      <p>Talk to Jarvis. He logs tasks, tracks projects, and pushes your money-making ideas forward as you go.</p>
+    <div class="rail-spacer"></div>
+
+    <div class="rail-metrics">
+      <span>FPS <b id="r-fps">—</b></span>
+      <span>PING <b id="r-ping">—</b></span>
+      <span>MEM <b id="r-mem">—</b></span>
     </div>
-    <div id="chat-log" class="chat-log"></div>
-    <form id="chat-form" class="chat-form">
-      <input id="chat-input" type="text" placeholder="Tell Jarvis what's going on…" autocomplete="off" />
-      <button type="submit">Send</button>
-    </form>
-  </section>
 
-  <aside class="side-deck">
+    <span class="rail-sep"></span>
+    <div class="rail-clock"><b id="clock-time">--:--:--</b> <span id="clock-date"></span></div>
+    <button class="ghost-btn" id="logout-btn">disconnect</button>
+  </header>
 
-    <section class="card">
-      <div class="card-head">
-        <h2>Tasks</h2>
-        <button class="ghost-btn" id="add-task-btn">+ add</button>
+  <!-- ══════════ DECK ══════════ -->
+  <main class="deck">
+
+    <!-- ─── LEFT ─── -->
+    <aside class="col">
+
+      <section class="mod">
+        <div class="mod-head"><h2>Location</h2><span class="x">◇</span></div>
+        <div class="pad">
+          <div class="loc-name" id="loc-name">ACQUIRING…</div>
+          <div class="loc-coord" id="loc-coord">— · —</div>
+          <div class="wx">
+            <div class="wx-ico" id="wx-ico">◌</div>
+            <div>
+              <div class="wx-temp" id="wx-temp">—</div>
+              <div class="wx-cond" id="wx-cond">awaiting fix</div>
+            </div>
+          </div>
+          <div class="wx-hl" id="wx-hl">H: — &nbsp; L: —</div>
+        </div>
+      </section>
+
+      <section class="mod">
+        <div class="mod-head"><h2>System Status</h2></div>
+        <div class="pad">
+          <div class="meter"><div class="kv"><span>RENDER</span><b id="s-fps">—</b></div><div class="bar"><i id="s-fps-b"></i></div></div>
+          <div class="meter"><div class="kv"><span>JS HEAP</span><b id="s-mem">—</b></div><div class="bar"><i id="s-mem-b"></i></div></div>
+          <div class="meter"><div class="kv"><span>STORAGE</span><b id="s-sto">—</b></div><div class="bar"><i id="s-sto-b"></i></div></div>
+          <div class="meter"><div class="kv"><span>BATTERY</span><b id="s-bat">—</b></div><div class="bar"><i id="s-bat-b"></i></div></div>
+        </div>
+      </section>
+
+      <section class="mod">
+        <div class="mod-head"><h2>Network</h2><span class="x">◇</span></div>
+        <div class="pad">
+          <div class="kv"><span>LINK</span><b id="n-type">—</b></div>
+          <div class="kv"><span>PING</span><b id="n-ping">—</b></div>
+          <canvas id="pingchart" class="spark"></canvas>
+          <div class="nsplit">
+            <div><div class="nlabel">DOWNLINK</div><div class="nval" id="n-down">—</div></div>
+            <div><div class="nlabel">SESSION</div><div class="nval" id="n-up">00:00</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="mod grow">
+        <div class="mod-head"><h2>Tasks</h2><div class="sp"></div><span class="count" id="task-count">0</span><button class="ghost-btn mini" id="add-task-btn">+</button></div>
+        <ul id="task-list" class="list"></ul>
+      </section>
+
+    </aside>
+
+    <!-- ─── CENTER STAGE ─── -->
+    <section class="stage">
+
+      <canvas id="globe"></canvas>
+
+      <!-- overlay: global tracking -->
+      <div class="ovl ovl-tl">
+        <div class="ovl-head">| GLOBAL TRACKING</div>
+        <div class="ovl-body">
+          <canvas id="minigl" class="minigl"></canvas>
+          <div class="ovl-kv">
+            <div class="kv"><span>TASKS</span><b id="g-tasks">0</b></div>
+            <div class="kv"><span>PROJECTS</span><b id="g-proj">0</b></div>
+            <div class="kv"><span>ENTRIES</span><b id="g-entries">0</b></div>
+            <div class="kv"><span>NODES</span><b>2600</b></div>
+          </div>
+        </div>
       </div>
-      <ul id="task-list" class="list"></ul>
+
+      <!-- overlay: environment -->
+      <div class="ovl ovl-tr">
+        <div class="ovl-head">| ENVIRONMENT</div>
+        <div class="ovl-body col-body">
+          <div class="kv"><span>TEMP</span><b id="e-temp">—</b></div>
+          <div class="kv"><span>HUMIDITY</span><b id="e-hum">—</b></div>
+          <div class="kv"><span>WIND</span><b id="e-wind">—</b></div>
+          <div class="kv"><span>PRESSURE</span><b id="e-pres">—</b></div>
+          <canvas id="wxchart" class="spark wide"></canvas>
+          <div class="micro-note">24H TEMPERATURE</div>
+        </div>
+      </div>
+
+      <!-- overlay: signal -->
+      <div class="ovl ovl-ml">
+        <div class="ovl-head">| SIGNAL</div>
+        <div class="ovl-body col-body">
+          <div class="sig-state" id="sig-state">IDLE</div>
+          <canvas id="wave" class="wave"></canvas>
+          <div class="kv"><span>ENGINE</span><b id="sig-engine">READY</b></div>
+          <div class="kv"><span>LOGGED</span><b id="sig-logged">0</b></div>
+        </div>
+      </div>
+
+      <!-- center identity -->
+      <div class="core-id">
+        <div class="core-name">JARVIS</div>
+        <canvas id="bigwave" class="bigwave"></canvas>
+        <div class="core-state" id="core-state">STANDING BY</div>
+      </div>
+
+      <!-- command bar -->
+      <form id="chat-form" class="cmd">
+        <span class="cmd-mark">&gt;</span>
+        <input id="chat-input" type="text" placeholder="Tell Jarvis what's going on…" autocomplete="off" />
+        <button type="submit">Transmit</button>
+      </form>
+
+      <!-- transcript -->
+      <div id="chat-log" class="chat-log"></div>
+
     </section>
 
-    <section class="card">
-      <div class="card-head">
-        <h2>Projects</h2>
-        <button class="ghost-btn" id="add-project-btn">+ add</button>
-      </div>
-      <ul id="project-list" class="list"></ul>
-    </section>
+    <!-- ─── RIGHT ─── -->
+    <aside class="col">
 
-    <section class="card">
-      <div class="card-head">
-        <h2>Journal</h2>
-      </div>
-      <ul id="journal-list" class="list list-compact"></ul>
-    </section>
+      <section class="mod">
+        <div class="mod-head"><h2>Commands</h2><span class="x">◇</span></div>
+        <ul class="cmds" id="cmd-list">
+          <li data-cmd="Give me my morning briefing."><b>"Morning briefing"</b><span>Full status pull</span></li>
+          <li data-cmd="Add a task: "><b>"Add a task…"</b><span>Logs to the board</span></li>
+          <li data-cmd="What should I work on right now?"><b>"What now?"</b><span>Prioritised next step</span></li>
+          <li data-cmd="Start tracking a new project: "><b>"Track a project"</b><span>New income idea</span></li>
+          <li data-cmd="Log how my day went: "><b>"Log my day"</b><span>Journal entry</span></li>
+        </ul>
+      </section>
 
-  </aside>
+      <section class="mod">
+        <div class="mod-head"><h2>Projects</h2><div class="sp"></div><span class="count" id="project-count">0</span><button class="ghost-btn mini" id="add-project-btn">+</button></div>
+        <ul id="project-list" class="list"></ul>
+      </section>
 
-</main>
+      <section class="mod grow">
+        <div class="mod-head"><h2>Recent Activity</h2></div>
+        <ul id="journal-list" class="list"></ul>
+      </section>
 
+    </aside>
+
+  </main>
+
+  <footer class="foot">
+    <span>JARVIS</span><i>//</i><span>ASSIST</span><i>·</i><span>ANALYZE</span><i>·</i><span>EVOLVE</span>
+  </footer>
+
+</div>
+
+<script src="/globe.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

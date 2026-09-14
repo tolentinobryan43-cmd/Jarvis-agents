@@ -126,14 +126,17 @@
         </div>
       </div>
 
-      <!-- overlay: signal -->
+      <!-- overlay: voice -->
       <div class="ovl ovl-ml">
-        <div class="ovl-head">| SIGNAL</div>
+        <div class="ovl-head">| VOICE RECOGNITION</div>
         <div class="ovl-body col-body">
-          <div class="sig-state" id="sig-state">IDLE</div>
+          <div class="sig-state" id="voice-state">OFFLINE</div>
           <canvas id="wave" class="wave"></canvas>
-          <div class="kv"><span>ENGINE</span><b id="sig-engine">READY</b></div>
+          <div class="heard" id="voice-heard">—</div>
+          <div class="kv"><span>WAKE WORD</span><b>HEY JARVIS</b></div>
+          <div class="kv"><span>LANGUAGE</span><b>EN-US</b></div>
           <div class="kv"><span>LOGGED</span><b id="sig-logged">0</b></div>
+          <button class="ghost-btn wide" id="mic-btn">enable mic</button>
         </div>
       </div>
 
@@ -142,6 +145,7 @@
         <div class="core-name">JARVIS</div>
         <canvas id="bigwave" class="bigwave"></canvas>
         <div class="core-state" id="core-state">STANDING BY</div>
+        <div class="core-hint">SAY “HEY JARVIS” — OR TYPE BELOW</div>
       </div>
 
       <!-- command bar -->
@@ -192,5 +196,6 @@
 
 <script src="/globe.js"></script>
 <script src="/app.js"></script>
+<script src="/voice.js"></script>
 </body>
 </html>

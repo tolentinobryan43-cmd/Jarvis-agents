@@ -84,18 +84,15 @@ async function loadHistory() {
   rows.forEach((r) => addMsg(r.role, r.content));
 }
 
-chatForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const text = chatInput.value.trim();
-  if (!text) return;
-  chatInput.value = '';
+// Shared by the text form and the voice layer. Resolves with the reply text,
+// or null when the request failed.
+async function sendToJarvis(text) {
+  if (!text || !text.trim()) return null;
   addMsg('user', text);
   const pending = addMsg('assistant pending', 'processing…');
 
   busy = 1;
-  $('sig-state').textContent = 'TRANSMITTING';
   $('core-state').textContent = 'PROCESSING';
-  $('sig-engine').textContent = 'ACTIVE';
 
   try {
     const res = await fetch('/api/chat', {
@@ -105,18 +102,28 @@ chatForm.addEventListener('submit', async (e) => {
     });
     const data = await res.json();
     pending.remove();
-    if (data.error) addMsg('assistant', `Error: ${data.error}`);
-    else { addMsg('assistant', data.reply); refreshWidgets(); }
+    if (data.error) { addMsg('assistant', `Error: ${data.error}`); return null; }
+    addMsg('assistant', data.reply);
+    refreshWidgets();
+    return data.reply;
   } catch (err) {
     pending.remove();
     addMsg('assistant', `Connection error: ${err.message}`);
+    return null;
   } finally {
     busy = 0;
-    $('sig-state').textContent = 'IDLE';
     $('core-state').textContent = 'STANDING BY';
-    $('sig-engine').textContent = 'READY';
   }
+}
+
+chatForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = chatInput.value.trim();
+  chatInput.value = '';
+  sendToJarvis(text);
 });
+
+window.Jarvis = { send: sendToJarvis, micLevel: 0 };
 
 document.querySelectorAll('#cmd-list li').forEach((li) => {
   li.addEventListener('click', () => {
@@ -498,8 +505,11 @@ let miniRot = 0;
 
 function loop() {
   sampleFps();
-  const target = busy ? 1 : 0.34;
-  amp += (target - amp) * 0.06;
+  // When the mic is live the waveform tracks actual input level; otherwise it
+  // idles, or runs hot while a request is in flight.
+  const mic = window.Jarvis.micLevel || 0;
+  const target = mic > 0.008 ? Math.min(1, 0.12 + mic * 2.6) : (busy ? 1 : 0.3);
+  amp += (target - amp) * (mic > 0.008 ? 0.35 : 0.06);
   miniRot += 0.006;
 
   drawWave($('wave'), false);

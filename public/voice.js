@@ -49,6 +49,17 @@
     requestAnimationFrame(decay);
   })();
 
+  // A stalled network request (blocked CDN, dead wifi) resolves neither way
+  // and hangs forever with nothing else here to notice — race it against a
+  // timer so it always settles one way or the other.
+  function withTimeout(promise, ms, label) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(label + ' timed out after ' + (ms / 1000) + 's')), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
+
   /* ─────────── library loading ─────────── */
 
   function loadScript(src) {
@@ -56,7 +67,7 @@
       const s = document.createElement('script');
       s.src = src;
       s.onload = resolve;
-      s.onerror = () => reject(new Error('cdn blocked'));
+      s.onerror = () => reject(new Error('cdn blocked: ' + src));
       document.head.appendChild(s);
     });
   }
@@ -66,11 +77,14 @@
     if (!libsPromise) {
       libsPromise = (async () => {
         diag('loading engine…');
-        await loadScript(TFJS);
-        await loadScript(SPEECH);
+        await withTimeout(loadScript(TFJS), 15000, 'loading tfjs');
+        await withTimeout(loadScript(SPEECH), 15000, 'loading speech-commands');
         base = window.speechCommands.create('BROWSER_FFT');
-        await base.ensureModelLoaded();
-      })();
+        await withTimeout(base.ensureModelLoaded(), 15000, 'loading base model');
+      })().catch((err) => {
+        libsPromise = null;   // let a retry actually retry the network, not replay this failure forever
+        throw err;
+      });
     }
     return libsPromise;
   }
@@ -293,20 +307,17 @@
 
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // Any single step here can silently hang (busy mic, stalled audio
-  // context) with no rejection — without this, the overlay just sits on
-  // "working…" forever with no error to diagnose. Turn a hang into a
-  // visible, specific failure instead.
-  function withTimeout(promise, ms, label) {
-    let timer;
-    const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(label + ' timed out after ' + (ms / 1000) + 's')), ms);
-    });
-    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  // Cancel used to just hide the modal — anything already in flight (a
+  // network fetch, a recording) kept running invisibly and could still
+  // touch the UI afterward. Every stage checks this and bails out for real.
+  let cancelRequested = false;
+  function throwIfCancelled() {
+    if (cancelRequested) throw new Error('cancelled');
   }
 
   async function collect(label, n, promptText, hintText) {
     for (let i = 0; i < n; i++) {
+      throwIfCancelled();
       tPrompt.textContent = promptText;
       tHint.textContent = hintText;
       tStep.textContent = `${label === WAKE ? 'WAKE WORD' : 'ROOM NOISE'} — ${i + 1} / ${n}`;
@@ -314,6 +325,7 @@
 
       tPrompt.classList.remove('live');
       await wait(550);
+      throwIfCancelled();
       tPrompt.classList.add('live');      // cue to speak
       await withTimeout(wake.collectExample(label), 8000, `sample ${i + 1}/${n}`);
     }
@@ -322,12 +334,14 @@
   }
 
   async function runTraining() {
+    cancelRequested = false;
     overlay.hidden = false;
     tAction.disabled = true;
     tAction.textContent = 'working…';
 
     try {
-      await loadLibs();
+      await withTimeout(loadLibs(), 45000, 'loading engine');
+      throwIfCancelled();
       // Retraining while the wake model is actively listening leaves the
       // mic claimed by wake.listen() — collectExample() then has nothing
       // to record from and waits forever with no error. Release it first.
@@ -346,6 +360,7 @@
       await collect(NOISE, NOISE_SAMPLES, '· · ·',
         'Stay quiet, or talk about something else. This teaches it what to ignore.');
 
+      throwIfCancelled();
       tStep.textContent = 'TRAINING';
       tPrompt.textContent = '◐';
       tHint.textContent = 'Building the model on your machine…';
@@ -372,6 +387,7 @@
 
       await startListening();
     } catch (err) {
+      if (err.message === 'cancelled') return;   // user hit cancel — modal's already closed, nothing more to show
       console.error('[jarvis] training failed:', err);
       tStep.textContent = 'FAILED';
       tPrompt.textContent = '✕';
@@ -386,7 +402,10 @@
   tAction.addEventListener('click', () => {
     if (tAction.textContent === 'close') overlay.hidden = true;
   });
-  $('train-cancel').addEventListener('click', () => { overlay.hidden = true; });
+  $('train-cancel').addEventListener('click', () => {
+    cancelRequested = true;
+    overlay.hidden = true;
+  });
   trainBtn.addEventListener('click', runTraining);
 
   /* ─────────── controls ─────────── */

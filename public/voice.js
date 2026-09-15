@@ -293,6 +293,18 @@
 
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // Any single step here can silently hang (busy mic, stalled audio
+  // context) with no rejection — without this, the overlay just sits on
+  // "working…" forever with no error to diagnose. Turn a hang into a
+  // visible, specific failure instead.
+  function withTimeout(promise, ms, label) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(label + ' timed out after ' + (ms / 1000) + 's')), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
+
   async function collect(label, n, promptText, hintText) {
     for (let i = 0; i < n; i++) {
       tPrompt.textContent = promptText;
@@ -303,7 +315,7 @@
       tPrompt.classList.remove('live');
       await wait(550);
       tPrompt.classList.add('live');      // cue to speak
-      await wake.collectExample(label);
+      await withTimeout(wake.collectExample(label), 8000, `sample ${i + 1}/${n}`);
     }
     tPrompt.classList.remove('live');
     tBar.style.width = '100%';
@@ -316,6 +328,10 @@
 
     try {
       await loadLibs();
+      // Retraining while the wake model is actively listening leaves the
+      // mic claimed by wake.listen() — collectExample() then has nothing
+      // to record from and waits forever with no error. Release it first.
+      await stopListening();
       // The recognizer is created once at load; re-creating it throws.
       if (!wake) wake = base.createTransfer(MODEL_NAME);
       try { wake.clearExamples(); } catch {}
@@ -334,17 +350,18 @@
       tPrompt.textContent = '◐';
       tHint.textContent = 'Building the model on your machine…';
 
-      await wake.train({
+      await withTimeout(wake.train({
         epochs: 32,
         callback: {
           onEpochEnd: async (epoch, logs) => {
             tBar.style.width = (((epoch + 1) / 32) * 100).toFixed(0) + '%';
-            tHint.textContent = `epoch ${epoch + 1}/32 · accuracy ${(logs.acc * 100).toFixed(0)}%`;
+            const acc = logs.acc ?? logs.accuracy;
+            tHint.textContent = `epoch ${epoch + 1}/32 · accuracy ${((acc || 0) * 100).toFixed(0)}%`;
           },
         },
-      });
+      }), 60000, 'training');
 
-      await wake.save();
+      await withTimeout(wake.save(), 8000, 'saving model');
       trained = true;
 
       tStep.textContent = 'READY';
@@ -355,6 +372,7 @@
 
       await startListening();
     } catch (err) {
+      console.error('[jarvis] training failed:', err);
       tStep.textContent = 'FAILED';
       tPrompt.textContent = '✕';
       tHint.textContent = err.name === 'NotAllowedError'
